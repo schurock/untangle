@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Untangle – mindmatters</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #1a1a2e;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    color: #e0e0e0;
+    user-select: none;
+  }
+  #menuBtn {
+    position: fixed;
+    top: 0.8rem; right: 0.8rem;
+    z-index: 6;
+    width: 40px; height: 40px;
+    background: rgba(233, 69, 96, 0.15);
+    border: 1px solid rgba(233, 69, 96, 0.3);
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    transition: background 0.2s;
+  }
+  #menuBtn:hover { background: rgba(233, 69, 96, 0.3); }
+  #menuBtn span {
+    display: block;
+    width: 18px; height: 2px;
+    background: #e94560;
+    border-radius: 1px;
+  }
+  #menu {
+    position: fixed;
+    top: 0; right: 0;
+    z-index: 5;
+    width: 220px; height: 100%;
+    background: rgba(22, 33, 62, 0.95);
+    border-left: 1px solid rgba(233, 69, 96, 0.2);
+    padding: 4rem 1.2rem 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
+    backdrop-filter: blur(10px);
+  }
+  #menu.open { transform: translateX(0); }
+  #menu h2 {
+    font-size: 1.1rem;
+    color: #e94560;
+    letter-spacing: 2px;
+    margin-bottom: 0.5rem;
+  }
+  #menu label {
+    font-size: 0.9rem;
+    color: #aaa;
+  }
+  button {
+    background: #e94560;
+    color: #fff;
+    border: none;
+    padding: 0.6rem 1rem;
+    border-radius: 6px;
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: background 0.2s;
+    width: 100%;
+  }
+  button:hover { background: #c73650; }
+  select {
+    background: #16213e;
+    color: #e0e0e0;
+    border: 1px solid #e94560;
+    padding: 0.5rem 0.8rem;
+    border-radius: 6px;
+    font-size: 0.95rem;
+    cursor: pointer;
+    width: 100%;
+  }
+  canvas {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw !important;
+    height: 100vh !important;
+    background: #16213e;
+    touch-action: none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+  }
+  #win {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    z-index: 10;
+  }
+  #win.show { display: flex; }
+  #win h2 { font-size: 2.5rem; color: #0f0; margin-bottom: 1rem; }
+  #win p { color: #ccc; margin-bottom: 1.5rem; font-size: 1.1rem; }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+<div id="menuBtn"><span></span><span></span><span></span></div>
+<div id="menu">
+  <h2>UNTANGLE</h2>
+  <label>Schwierigkeit</label>
+  <select id="difficulty">
+    <option value="14" selected>Schwer (14)</option>
+    <option value="20">Experte (20)</option>
+    <option value="28">Meister (28)</option>
+    <option value="38">Großmeister (38)</option>
+    <option value="50">Legende (50)</option>
+    <option value="70">Wahnsinn (70)</option>
+    <option value="100">Apokalypse (100)</option>
+  </select>
+  <button id="newGame">Neues Spiel</button>
+  <button id="autoSolve">Auflösen</button>
+</div>
+
+<div id="win">
+  <h2>Gelöst!</h2>
+  <p id="winMsg"></p>
+  <button id="playAgain">Nochmal spielen</button>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const winOverlay = document.getElementById('win');
+const winMsg = document.getElementById('winMsg');
+const menu = document.getElementById('menu');
+const menuBtn = document.getElementById('menuBtn');
+
+let W, H;
+let nodes = [];
+let edges = [];
+let solution = [];
+let crossings = 0;
+let moves = 0;
+
+let degrees = [];
+let crossingSet = new Set();
+
+let drag = null;
+let selected = new Set();
+let selectMode = false;
+let solving = false;
+
+let longPressTimer = null;
+let hasMoved = false;
+
+let pinch = null;
+let isTouch = false;
+let rafPending = false;
+
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * devicePixelRatio;
+  canvas.height = H * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+
+function segmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
+  const det = (bx - ax) * (dy - cy) - (by - ay) * (dx - cx);
+  if (Math.abs(det) < 1e-10) return false;
+  const t = ((cx - ax) * (dy - cy) - (cy - ay) * (dx - cx)) / det;
+  const u = ((cx - ax) * (by - ay) - (cy - ay) * (bx - ax)) / det;
+  return t > 0.001 && t < 0.999 && u > 0.001 && u < 0.999;
+}
+
+function edgeCrosses(ei) {
+  const [a, b] = edges[ei];
+  for (let j = 0; j < edges.length; j++) {
+    if (j === ei) continue;
+    const [p, q] = edges[j];
+    if (a === p || a === q || b === p || b === q) continue;
+    if (segmentsIntersect(
+      nodes[a].x, nodes[a].y, nodes[b].x, nodes[b].y,
+      nodes[p].x, nodes[p].y, nodes[q].x, nodes[q].y
+    )) return true;
+  }
+  return false;
+}
+
+function updateCrossings() {
+  crossings = 0;
+  crossingSet.clear();
+  for (let i = 0; i < edges.length; i++) {
+    for (let j = i + 1; j < edges.length; j++) {
+      const [a, b] = edges[i];
+      const [p, q] = edges[j];
+      if (a === p || a === q || b === p || b === q) continue;
+      if (segmentsIntersect(
+        nodes[a].x, nodes[a].y, nodes[b].x, nodes[b].y,
+        nodes[p].x, nodes[p].y, nodes[q].x, nodes[q].y
+      )) {
+        crossings++;
+        crossingSet.add(i);
+        crossingSet.add(j);
+      }
+    }
+  }
+}
+
+function computeDegrees() {
+  degrees = new Array(nodes.length).fill(0);
+  for (const [a, b] of edges) {
+    degrees[a]++;
+    degrees[b]++;
+  }
+}
+
+function scheduleFrame() {
+  if (!rafPending) {
+    rafPending = true;
+    requestAnimationFrame(() => {
+      rafPending = false;
+      updateCrossings();
+      draw();
+    });
+  }
+}
+
+function generatePlanarGraph(n) {
+  const pad = 60;
+  nodes = [];
+  edges = [];
+
+  for (let i = 0; i < n; i++) {
+    nodes.push({
+      x: pad + Math.random() * (W - 2 * pad),
+      y: pad + Math.random() * (H - 2 * pad)
+    });
+  }
+
+  const added = new Set();
+  for (let i = 1; i < n; i++) {
+    const candidates = [];
+    for (let j = 0; j < i; j++) {
+      const dx = nodes[i].x - nodes[j].x;
+      const dy = nodes[i].y - nodes[j].y;
+      candidates.push({ j, d: dx * dx + dy * dy });
+    }
+    candidates.sort((a, b) => a.d - b.d);
+    for (const c of candidates) {
+      edges.push([c.j, i]);
+      if (edgeCrosses(edges.length - 1)) {
+        edges.pop();
+      } else {
+        added.add(`${c.j}-${i}`);
+        break;
+      }
+    }
+  }
+
+  const maxExtra = Math.floor(n * 0.8);
+  let extra = 0;
+  for (let i = 0; i < n && extra < maxExtra; i++) {
+    for (let j = i + 2; j < n && extra < maxExtra; j++) {
+      const key = `${i}-${j}`;
+      if (added.has(key)) continue;
+      if (Math.random() > 0.35) continue;
+      edges.push([i, j]);
+      if (edgeCrosses(edges.length - 1)) {
+        edges.pop();
+      } else {
+        added.add(key);
+        extra++;
+      }
+    }
+  }
+
+  computeDegrees();
+  solution = nodes.map(nd => ({ x: nd.x, y: nd.y }));
+  scramble();
+}
+
+function scramble() {
+  const pad = 50;
+  const cx = W / 2, cy = H / 2;
+  for (const node of nodes) {
+    const angle = Math.random() * Math.PI * 2;
+    const r = pad + Math.random() * (Math.min(W, H) / 2 - pad);
+    node.x = cx + Math.cos(angle) * r;
+    node.y = cy + Math.sin(angle) * r;
+  }
+  updateCrossings();
+  if (crossings === 0) scramble();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  for (let i = 0; i < edges.length; i++) {
+    const [a, b] = edges[i];
+    const crosses = crossingSet.has(i);
+    ctx.beginPath();
+    ctx.moveTo(nodes[a].x, nodes[a].y);
+    ctx.lineTo(nodes[b].x, nodes[b].y);
+    ctx.strokeStyle = crosses ? 'rgba(233, 69, 96, 0.6)' : 'rgba(0, 255, 120, 0.5)';
+    ctx.lineWidth = crosses ? 1.5 : 2;
+    ctx.stroke();
+  }
+
+  const activeNode = drag ? drag.idx : null;
+
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    const isActive = activeNode === i;
+    const isSel = selected.has(i);
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, isActive ? 12 : isSel ? 11 : 9, 0, Math.PI * 2);
+    ctx.fillStyle = isActive ? '#fff' : '#e94560';
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = isSel ? 4 : 2;
+    ctx.stroke();
+
+    const isNeighbor = activeNode !== null && activeNode !== i &&
+      edges.some(([a, b]) => (a === activeNode && b === i) || (b === activeNode && a === i));
+    ctx.fillStyle = isNeighbor ? '#000' : '#fff';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(degrees[i], n.x, n.y + 1);
+  }
+}
+
+function pointerPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  const src = e.touches ? e.touches[0] : e;
+  return { x: src.clientX - rect.left, y: src.clientY - rect.top };
+}
+
+function findNode(pos) {
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const dx = nodes[i].x - pos.x;
+    const dy = nodes[i].y - pos.y;
+    if (dx * dx + dy * dy < 400) return i;
+  }
+  return null;
+}
+
+function clearLongPress() {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+}
+
+function resetDrag() {
+  drag = null;
+  hasMoved = false;
+  clearLongPress();
+}
+
+function startDrag(idx, pos) {
+  const offsets = new Map();
+  for (const si of selected) {
+    offsets.set(si, { dx: nodes[si].x - pos.x, dy: nodes[si].y - pos.y });
+  }
+  drag = { idx, offsets };
+  hasMoved = false;
+}
+
+function handleDown(e) {
+  if (solving) return;
+  if (e.touches && e.touches.length >= 2) return;
+
+  const pos = pointerPos(e);
+  const idx = findNode(pos);
+
+  if (idx === null) {
+    selectMode = false;
+    selected.clear();
+    scheduleFrame();
+    return;
+  }
+
+  if (e.shiftKey || selectMode) {
+    if (!selected.has(idx)) {
+      selected.add(idx);
+      scheduleFrame();
+      return;
+    }
+    startDrag(idx, pos);
+    longPressTimer = setTimeout(() => {
+      if (!hasMoved) {
+        selected.delete(idx);
+        resetDrag();
+        if (selected.size === 0) selectMode = false;
+        scheduleFrame();
+      }
+    }, 500);
+    scheduleFrame();
+    return;
+  }
+
+  if (!selected.has(idx)) selected.clear();
+  selected.add(idx);
+  startDrag(idx, pos);
+
+  longPressTimer = setTimeout(() => {
+    if (!hasMoved) {
+      selectMode = true;
+      resetDrag();
+      try { navigator.vibrate?.(30); } catch (_) {}
+      scheduleFrame();
+    }
+  }, 500);
+  scheduleFrame();
+}
+
+function handleMove(e) {
+  if (!drag) return;
+  if (!hasMoved) {
+    hasMoved = true;
+    clearLongPress();
+  }
+  const pos = pointerPos(e);
+  for (const si of selected) {
+    const off = drag.offsets.get(si);
+    if (off) {
+      nodes[si].x = Math.max(10, Math.min(W - 10, pos.x + off.dx));
+      nodes[si].y = Math.max(10, Math.min(H - 10, pos.y + off.dy));
+    }
+  }
+  scheduleFrame();
+}
+
+function handleUp() {
+  clearLongPress();
+  if (drag) {
+    if (hasMoved) moves++;
+    resetDrag();
+    updateCrossings();
+    draw();
+    if (crossings === 0) animateWin();
+  }
+}
+
+function onTouchStart(e) {
+  e.preventDefault();
+  isTouch = true;
+  if (e.touches.length === 2) {
+    resetDrag();
+    const rect = canvas.getBoundingClientRect();
+    const t0 = e.touches[0], t1 = e.touches[1];
+    const dx = t1.clientX - t0.clientX, dy = t1.clientY - t0.clientY;
+    pinch = {
+      dist: Math.sqrt(dx * dx + dy * dy),
+      cx: (t0.clientX + t1.clientX) / 2 - rect.left,
+      cy: (t0.clientY + t1.clientY) / 2 - rect.top
+    };
+    return;
+  }
+  handleDown(e);
+}
+
+function onTouchMove(e) {
+  e.preventDefault();
+  if (e.touches.length === 2 && pinch) {
+    const rect = canvas.getBoundingClientRect();
+    const t0 = e.touches[0], t1 = e.touches[1];
+    const dx = t1.clientX - t0.clientX, dy = t1.clientY - t0.clientY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const cx = (t0.clientX + t1.clientX) / 2 - rect.left;
+    const cy = (t0.clientY + t1.clientY) / 2 - rect.top;
+
+    const scale = dist / pinch.dist;
+    const panX = cx - pinch.cx;
+    const panY = cy - pinch.cy;
+    for (const node of nodes) {
+      node.x = cx + (node.x - cx) * scale + panX;
+      node.y = cy + (node.y - cy) * scale + panY;
+    }
+    pinch = { dist, cx, cy };
+    scheduleFrame();
+    return;
+  }
+  handleMove(e);
+}
+
+function onTouchEnd(e) {
+  e.preventDefault();
+  if (e.touches.length < 2) pinch = null;
+  if (e.touches.length === 0) handleUp();
+}
+
+function onTouchCancel(e) {
+  e.preventDefault();
+  resetDrag();
+  pinch = null;
+  scheduleFrame();
+}
+
+function handleWheel(e) {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  if (e.ctrlKey) {
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    const scale = 1 - e.deltaY * 0.01;
+    for (const node of nodes) {
+      node.x = cx + (node.x - cx) * scale;
+      node.y = cy + (node.y - cy) * scale;
+    }
+  } else {
+    for (const node of nodes) {
+      node.x -= e.deltaX;
+      node.y -= e.deltaY;
+    }
+  }
+  scheduleFrame();
+}
+
+function animateTo(targets, duration, onDone) {
+  const starts = nodes.map(n => ({ x: n.x, y: n.y }));
+  const startTime = performance.now();
+
+  function ease(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
+  function step() {
+    const t = Math.min(1, (performance.now() - startTime) / duration);
+    const p = ease(t);
+    for (let i = 0; i < nodes.length; i++) {
+      nodes[i].x = starts[i].x + (targets[i].x - starts[i].x) * p;
+      nodes[i].y = starts[i].y + (targets[i].y - starts[i].y) * p;
+    }
+    updateCrossings();
+    draw();
+    if (t < 1) {
+      requestAnimationFrame(step);
+    } else if (onDone) {
+      onDone();
+    }
+  }
+  requestAnimationFrame(step);
+}
+
+function animateWin() {
+  solving = true;
+  setTimeout(() => {
+    animateTo(solution, 1500, () => {
+      solving = false;
+      setTimeout(() => {
+        winMsg.textContent = `Geschafft in ${moves} Zügen!`;
+        winOverlay.classList.add('show');
+      }, 400);
+    });
+  }, 2000);
+}
+
+function autoSolve() {
+  if (solving || crossings === 0) return;
+  solving = true;
+  animateTo(solution, 2000, () => { solving = false; });
+}
+
+function newGame() {
+  winOverlay.classList.remove('show');
+  solving = false;
+  moves = 0;
+  selected.clear();
+  selectMode = false;
+  resetDrag();
+  pinch = null;
+  rafPending = false;
+  const n = parseInt(document.getElementById('difficulty').value);
+  resize();
+  generatePlanarGraph(n);
+  draw();
+}
+
+canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+canvas.addEventListener('touchend', onTouchEnd, { passive: false });
+canvas.addEventListener('touchcancel', onTouchCancel, { passive: false });
+canvas.addEventListener('mousedown', (e) => { if (!isTouch) { e.preventDefault(); handleDown(e); } });
+canvas.addEventListener('mousemove', (e) => { if (!isTouch) handleMove(e); });
+canvas.addEventListener('mouseup', () => { if (!isTouch) handleUp(); });
+canvas.addEventListener('mouseleave', () => { if (!isTouch) handleUp(); });
+canvas.addEventListener('wheel', handleWheel, { passive: false });
+
+menuBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  menu.classList.toggle('open');
+});
+document.addEventListener('click', (e) => {
+  if (menu.classList.contains('open') && !menu.contains(e.target) && !menuBtn.contains(e.target)) {
+    menu.classList.remove('open');
+  }
+});
+
+document.getElementById('autoSolve').addEventListener('click', () => { menu.classList.remove('open'); autoSolve(); });
+document.getElementById('newGame').addEventListener('click', () => { menu.classList.remove('open'); newGame(); });
+document.getElementById('playAgain').addEventListener('click', newGame);
+document.getElementById('difficulty').addEventListener('change', () => { menu.classList.remove('open'); newGame(); });
+window.addEventListener('resize', () => { resize(); draw(); });
+
+newGame();
+</script>
+</body>
+</html>
